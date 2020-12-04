@@ -1,6 +1,7 @@
 #include <mpi.h>
 #include <omp.h>
 #include <getopt.h>
+#include <algorithm>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -29,101 +30,111 @@ int nproc, rank;
 const int MASTER_PROCESS = 0;
 
 typedef enum {
-    SUCCESS            = 0,
-    INVALID_PARAMETERS = 1
+    SUCCESS                 = 0,
+    INVALID_PARAMETERS      = 1,
+    PROCESS_NUMBER_MISMATCH = 2
 } exit_code;
 
 
-bool validate_parameters() {
+exit_code validate_parameters(int claimed_process_number) {
 
-    bool is_valid = true;
+    exit_code result = SUCCESS;
     // TODO check for two-letter one-dash keys allowance
 
     if (param_x_proc <= 0) {
         std::cerr << "input parameters error: "
             "--xproc must be a positive integer, but " <<
             param_x_proc << " was given" << std::endl;
-        is_valid = false;
+        result = INVALID_PARAMETERS;
     }
 
     if (param_y_proc <= 0) {
         std::cerr << "input parameters error: "
             "--yproc must be a positive integer, but " <<
             param_y_proc << " was given" << std::endl;
-        is_valid = false;
+        result = INVALID_PARAMETERS;
     }
 
     if (param_z_proc <= 0) {
         std::cerr << "input parameters error: "
             "--zproc must be a positive integer, but " <<
             param_z_proc << " was given" << std::endl;
-        is_valid = false;
+        result = INVALID_PARAMETERS;
     }
 
     if (param_x_bound <= 0) {
         std::cerr << "input parameters error: "
             "--xbound (-x) must be a positive double, but " <<
             param_x_bound << " was given" << std::endl;
-        is_valid = false;
+        result = INVALID_PARAMETERS;
     }
 
     if (param_y_bound <= 0) {
         std::cerr << "input parameters error: "
             "--ybound (-y) must be a positive double, but " <<
             param_y_bound << " was given" << std::endl;
-        is_valid = false;
+        result = INVALID_PARAMETERS;
     }
 
     if (param_z_bound <= 0) {
         std::cerr << "input parameters error: "
             "--zbound (-z) must be a positive double, but " <<
             param_z_bound << " was given" << std::endl;
-        is_valid = false;
+        result = INVALID_PARAMETERS;
     }
 
     if (param_t_bound <= 0) {
         std::cerr << "input parameters error: "
             "--tbound (-t) must be a positive double, but " <<
             param_t_bound << " was given" << std::endl;
-        is_valid = false;
+        result = INVALID_PARAMETERS;
     }
 
     if (param_x_nodes <= 0) {
         std::cerr << "input parameters error: "
             "--xnodes must be a positive integer, but " <<
             param_x_nodes << " was given" << std::endl;
-        is_valid = false;
+        result = INVALID_PARAMETERS;
     }
 
     if (param_y_nodes <= 0) {
         std::cerr << "input parameters error: "
             "--ynodes must be a positive integer, but " <<
             param_y_nodes << " was given" << std::endl;
-        is_valid = false;
+        result = INVALID_PARAMETERS;
     }
 
     if (param_z_nodes <= 0) {
         std::cerr << "input parameters error: "
             "--znodes must be a positive integer, but " <<
             param_z_nodes << " was given" << std::endl;
-        is_valid = false;
+        result = INVALID_PARAMETERS;
     }
 
     if (param_t_steps <= 0) {
         std::cerr << "input parameters error: "
             "--tsteps (-s) must be a positive integer, but " <<
             param_t_steps << " was given" << std::endl;
-        is_valid = false;
+        result = INVALID_PARAMETERS;
     }
 
     if (param_nt <= 0) {
         std::cerr << "input parameters error: "
             "--nt (-n) must a be positive integer, but " <<
             param_nt << " was given" << std::endl;
-        is_valid = false;
+        result = INVALID_PARAMETERS;
     }
 
-    return is_valid;
+    int grid_process_number = param_x_proc * param_y_proc * param_z_proc;
+    if (grid_process_number != claimed_process_number) {
+        std::cerr << "process number mismatch: " << claimed_process_number <<
+            " processes have been dedicated for the execution, but " <<
+            grid_process_number << " have been specified in the parameters" <<
+            std::endl;
+        result = PROCESS_NUMBER_MISMATCH;
+    }
+
+    return result;
 }
 
 int main(int argc, char *argv[]) {
@@ -240,10 +251,11 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        if (!validate_parameters()) {
+        exit_code validation_verdict = validate_parameters(nproc);
+        if (validation_verdict != SUCCESS) {
             std::cout << help_message << std::endl;
-            MPI_Abort(MPI_COMM_WORLD, INVALID_PARAMETERS);
-            exit(INVALID_PARAMETERS);
+            MPI_Abort(MPI_COMM_WORLD, validation_verdict);
+            exit(validation_verdict);
         }
 
         params_int[0] = param_x_proc;
@@ -279,19 +291,39 @@ int main(int argc, char *argv[]) {
     param_z_bound = params_double[2];
     param_t_bound = params_double[3];
 
-    std::cout << "param_x_proc=" << param_x_proc << std::endl <<
-                 "param_y_proc=" << param_y_proc << std::endl <<
-                 "param_z_proc=" << param_z_proc << std::endl <<
-                 "param_x_bound=" << param_x_bound << std::endl <<
-                 "param_y_bound=" << param_y_bound << std::endl <<
-                 "param_z_bound=" << param_z_bound << std::endl <<
-                 "param_t_bound=" << param_t_bound << std::endl <<
-                 "param_x_nodes=" << param_x_nodes << std::endl <<
-                 "param_y_nodes=" << param_y_nodes << std::endl <<
-                 "param_z_nodes=" << param_z_nodes << std::endl <<
-                 "param_t_steps=" << param_t_steps << std::endl <<
-                 "param_nt=" << param_nt << std::endl <<
-                 "in rank #" << rank << std::endl;
+    // runtime-calculated parameters
+    double dx = param_x_bound / param_x_nodes;
+    double dy = param_y_bound / param_y_nodes;
+    double dz = param_z_bound / param_z_nodes;
+    // dt (time step) needs to be < min(dx, dy, dz) for calculation method to be stable
+    double dt = std::min(dx, std::min(dy, dz)) / 2;
+    // double dt = param_t_bound / param_t_steps;
+
+    int dimension[3] = {param_x_proc, param_y_proc, param_z_proc};
+    // TODO is it needed?
+    int period[3] = {0, 0, 0};
+    const int REORDER_ENABLED = 1;
+    MPI_Comm grid_comm;
+    MPI_Cart_create(MPI_COMM_WORLD, 3, dimension, period, REORDER_ENABLED, &grid_comm);
+    MPI_Comm_rank(grid_comm, &rank);
+    int coords[3];
+    MPI_Cart_coords(grid_comm, rank, 3, coords);
+
+    printf("rank: %d; coords: %d %d %d\n", rank, coords[0], coords[1], coords[2]);
+
+    // std::cout << "param_x_proc=" << param_x_proc << std::endl <<
+    //              "param_y_proc=" << param_y_proc << std::endl <<
+    //              "param_z_proc=" << param_z_proc << std::endl <<
+    //              "param_x_bound=" << param_x_bound << std::endl <<
+    //              "param_y_bound=" << param_y_bound << std::endl <<
+    //              "param_z_bound=" << param_z_bound << std::endl <<
+    //              "param_t_bound=" << param_t_bound << std::endl <<
+    //              "param_x_nodes=" << param_x_nodes << std::endl <<
+    //              "param_y_nodes=" << param_y_nodes << std::endl <<
+    //              "param_z_nodes=" << param_z_nodes << std::endl <<
+    //              "param_t_steps=" << param_t_steps << std::endl <<
+    //              "param_nt=" << param_nt << std::endl <<
+    //              "in rank #" << rank << std::endl;
 
     omp_set_num_threads(param_nt);
     /*
