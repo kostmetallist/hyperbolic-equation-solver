@@ -57,6 +57,29 @@ typedef struct {
     ProcessBlockArea extended;
 } ProcessBlock;
 
+class MatrixAccessor {
+private:
+    double *data;
+    int xn, yn, zn;
+
+public:
+
+    MatrixAccessor(double *data, int xn, int yn, int zn) {
+        this->data = data;
+        this->xn = xn;
+        this->yn = yn;
+        this->zn = zn;
+    }
+
+    double get(int x, int y, int z) const {
+        return this->data[x * this->zn * this->yn + y * this->yn + z];
+    }
+
+    void set(int x, int y, int z, double value) {
+        this->data[x * this->zn * this->yn + y * this->yn + z] = value;
+    }
+};
+
 
 exit_code validate_parameters(int claimed_process_number) {
 
@@ -194,7 +217,7 @@ ProcessBlock prepare_process_block(const int axis_nodes[3],
     return block;
 }
 
-double sqr(double x) {
+inline double sqr(double x) {
     return x * x;
 }
 
@@ -384,9 +407,36 @@ int main(int argc, char *argv[]) {
     omp_set_num_threads(param_nt);
 
     const int nodes_coupled[3] = {param_x_nodes, param_y_nodes, param_z_nodes};
-    const int procs_coupled[3] = {param_x_proc, param_y_proc, param_z_proc};
-    ProcessBlock pb = prepare_process_block(
-        nodes_coupled, rank_coords, procs_coupled);
+    ProcessBlock pb = prepare_process_block(nodes_coupled, rank_coords, dims);
+
+    const int block_cells[3] = {
+        pb.extended.x.to - pb.extended.x.from,
+        pb.extended.y.to - pb.extended.y.from,
+        pb.extended.z.to - pb.extended.z.from
+    };
+
+    double *u_calc_prev = new double[block_cells[0] * block_cells[1] * block_cells[2]];
+    double *u_calc_curr = new double[block_cells[0] * block_cells[1] * block_cells[2]];
+    double *u_calc_next = new double[block_cells[0] * block_cells[1] * block_cells[2]];
+
+    MatrixAccessor prev_accessor(u_calc_prev, block_cells[0], block_cells[1], block_cells[2]),
+                   curr_accessor(u_calc_curr, block_cells[0], block_cells[1], block_cells[2]),
+                   next_accessor(u_calc_next, block_cells[0], block_cells[1], block_cells[2]);
+
+    // every block in non-trivial case has 6 neighbors: left-right, front-back, top-bottom
+    const int interface_size = 6 * sqr(std::max(
+        block_cells[0], std::max(block_cells[1], block_cells[2])));
+
+    double *egress_buffer = new double[interface_size],
+          *ingress_buffer = new double[interface_size];
+
+
+    delete [] u_calc_prev;
+    delete [] u_calc_curr;
+    delete [] u_calc_next;
+
+    delete [] egress_buffer;
+    delete [] ingress_buffer;
 
     MPI_Finalize();
     exit(SUCCESS);
