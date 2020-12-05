@@ -1,10 +1,15 @@
+#define _USE_MATH_DEFINES
+
 #include <mpi.h>
 #include <omp.h>
 #include <getopt.h>
 #include <algorithm>
 #include <iostream>
+#include <iomanip>
 #include <vector>
 #include <string>
+#include <sstream>
+#include <math.h>
 #include <stdlib.h>
 
 
@@ -35,11 +40,27 @@ typedef enum {
     PROCESS_NUMBER_MISMATCH = 2
 } exit_code;
 
+typedef struct {
+    int from;
+    int to;
+} Range;
+
+typedef struct {
+    Range x;
+    Range y;
+    Range z;
+} ProcessBlockArea;
+
+typedef struct {
+    ProcessBlockArea inner;
+    // extended area represents the union of inner cells and interface ones
+    ProcessBlockArea extended;
+} ProcessBlock;
+
 
 exit_code validate_parameters(int claimed_process_number) {
 
     exit_code result = SUCCESS;
-    // TODO check for two-letter one-dash keys allowance
 
     if (param_x_proc <= 0) {
         std::cerr << "input parameters error: "
@@ -135,6 +156,55 @@ exit_code validate_parameters(int claimed_process_number) {
     }
 
     return result;
+}
+
+ProcessBlock prepare_process_block(const int axis_nodes[3],
+    const int axis_coordinates[3], const int total_axis_processes[3]) {
+
+    ProcessBlock block;
+    ProcessBlockArea inner, extended;
+    Range inner_ranges[3], extended_ranges[3];
+
+    for (int i = 0; i < 3; ++i) {
+        int raw_from = axis_coordinates[i] *
+            (axis_nodes[i] / total_axis_processes[i]) + std::min(
+                axis_coordinates[i], axis_nodes[i] % total_axis_processes[i]);
+        Range inner_range, extended_range;
+
+        inner_range.from = (raw_from > 0) ? raw_from: raw_from + 1;
+        inner_range.to = raw_from + axis_nodes[i] / total_axis_processes[i] +
+            ((axis_coordinates[i] < axis_nodes[i] % total_axis_processes[i]) ? 1: 0);
+        inner_ranges[i] = inner_range;
+
+        extended_range.from = (raw_from > 0) ? raw_from - 1: raw_from;
+        extended_range.to = inner_range.to + 1;
+        extended_ranges[i] = extended_range;
+    }
+
+    inner.x = inner_ranges[0];
+    inner.y = inner_ranges[1];
+    inner.z = inner_ranges[2];
+
+    extended.x = extended_ranges[0];
+    extended.y = extended_ranges[1];
+    extended.z = extended_ranges[2];
+
+    block.inner = inner;
+    block.extended = extended;
+    return block;
+}
+
+double sqr(double x) {
+    return x * x;
+}
+
+double u_analytical(double x, double y, double z, double t) {
+    return sin(M_PI * x / param_x_bound) * 
+           sin(2 * M_PI * y / param_y_bound) *
+           sin(3 * M_PI * z / param_z_bound) *
+           cos(M_PI * t * sqrt(1 / sqr(param_x_bound) + 
+                               4 / sqr(param_y_bound) + 
+                               9 / sqr(param_z_bound)));
 }
 
 int main(int argc, char *argv[]) {
@@ -292,43 +362,31 @@ int main(int argc, char *argv[]) {
     param_t_bound = params_double[3];
 
     // runtime-calculated parameters
-    double dx = param_x_bound / param_x_nodes;
-    double dy = param_y_bound / param_y_nodes;
-    double dz = param_z_bound / param_z_nodes;
+    const double dx = param_x_bound / param_x_nodes;
+    const double dy = param_y_bound / param_y_nodes;
+    const double dz = param_z_bound / param_z_nodes;
+
     // dt (time step) needs to be < min(dx, dy, dz) for calculation method to be stable
-    double dt = std::min(dx, std::min(dy, dz)) / 2;
-    // double dt = param_t_bound / param_t_steps;
+    const double dt = std::min(dx, std::min(dy, dz)) / 2;
+    // TODO: uncomment for production
+    // const double dt = param_t_bound / param_t_steps;
 
-    int dimension[3] = {param_x_proc, param_y_proc, param_z_proc};
-    // TODO is it needed?
-    int period[3] = {0, 0, 0};
-    const int REORDER_ENABLED = 1;
+    const int dims[3] = {param_x_proc, param_y_proc, param_z_proc};
+    const int periods[3] = {0, 0, 0};
+    const int reorder_enabled = 1;
     MPI_Comm grid_comm;
-    MPI_Cart_create(MPI_COMM_WORLD, 3, dimension, period, REORDER_ENABLED, &grid_comm);
+    MPI_Cart_create(MPI_COMM_WORLD, 3, dims, periods, reorder_enabled, &grid_comm);
     MPI_Comm_rank(grid_comm, &rank);
-    int coords[3];
-    MPI_Cart_coords(grid_comm, rank, 3, coords);
+    int rank_coords[3];
+    MPI_Cart_coords(grid_comm, rank, 3, rank_coords);
 
-    printf("rank: %d; coords: %d %d %d\n", rank, coords[0], coords[1], coords[2]);
-
-    // std::cout << "param_x_proc=" << param_x_proc << std::endl <<
-    //              "param_y_proc=" << param_y_proc << std::endl <<
-    //              "param_z_proc=" << param_z_proc << std::endl <<
-    //              "param_x_bound=" << param_x_bound << std::endl <<
-    //              "param_y_bound=" << param_y_bound << std::endl <<
-    //              "param_z_bound=" << param_z_bound << std::endl <<
-    //              "param_t_bound=" << param_t_bound << std::endl <<
-    //              "param_x_nodes=" << param_x_nodes << std::endl <<
-    //              "param_y_nodes=" << param_y_nodes << std::endl <<
-    //              "param_z_nodes=" << param_z_nodes << std::endl <<
-    //              "param_t_steps=" << param_t_steps << std::endl <<
-    //              "param_nt=" << param_nt << std::endl <<
-    //              "in rank #" << rank << std::endl;
-
+    // TODO: change placement to somewhat more appropriate
     omp_set_num_threads(param_nt);
-    /*
-        GRID MANIPULATION AND CALCULATIONS
-    */
+
+    const int nodes_coupled[3] = {param_x_nodes, param_y_nodes, param_z_nodes};
+    const int procs_coupled[3] = {param_x_proc, param_y_proc, param_z_proc};
+    ProcessBlock pb = prepare_process_block(
+        nodes_coupled, rank_coords, procs_coupled);
 
     MPI_Finalize();
     exit(SUCCESS);
