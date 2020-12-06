@@ -518,6 +518,7 @@ int main(int argc, char *argv[]) {
     }
 
     // main loop
+    double *deltas = new double[param_t_steps + 1];
     double start_time = MPI_Wtime();
     int step = 1;
 
@@ -536,6 +537,33 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        double local_delta = 0;
+        #pragma omp parallel for shared(local_delta)
+        for (int i = pb.inner.x.from; i < pb.inner.x.to; ++i) {
+            for (int j = pb.inner.y.from; j < pb.inner.y.to; ++j) {
+                for (int k = pb.inner.z.from; k < pb.inner.z.to; ++k) {
+
+                    double delta = fabs(
+                        u_analytical(i * dx, j * dy, k * dz, step * dt) -
+                        u_calc_curr[(i - pb.extended.x.from) * block_cells[1] * block_cells[2] +
+                            (j - pb.extended.y.from) * block_cells[2] + (k - pb.extended.z.from)]);
+
+                    #pragma omp critical
+                    local_delta = (delta > local_delta)? delta: local_delta;
+                }
+            }
+        }
+
+        // getting overall area error
+        double global_delta;
+        if (not nproc) {
+            global_delta = local_delta;
+        } else {
+            MPI_Reduce(&local_delta, &global_delta, 1, MPI_DOUBLE, MPI_MAX, 0, grid_comm);
+        }
+
+        deltas[step] = global_delta;
+
         if (++step > param_t_steps) {
             break;
         }
@@ -547,7 +575,14 @@ int main(int argc, char *argv[]) {
         u_calc_next = tmp;
     }
 
+    // TODO count digits num (as C++98 does not support to_string)
+    // const int step_display_width = std::to_string(param_t_steps).length();
+    const int step_display_width = 2;
     if (rank == MASTER_PROCESS) {
+        for (int i = 1; i <= param_t_steps; ++i) {
+            std::cout << std::setw(step_display_width) << i << ": " <<
+                std::setprecision(16) << std::fixed << deltas[i] << std::endl;
+        }
         std::cout << "Elapsed time: " << std::setprecision(8) << 
             (MPI_Wtime() - start_time) << " s" << std::endl;
     }
@@ -558,6 +593,8 @@ int main(int argc, char *argv[]) {
 
     delete [] egress_buffer;
     delete [] ingress_buffer;
+
+    delete [] deltas;
 
     MPI_Finalize();
     exit(SUCCESS);
