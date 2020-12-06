@@ -61,6 +61,7 @@ class MatrixAccessor {
 private:
     double *data;
     int xn, yn, zn;
+    int _offset_x, _offset_y, _offset_z;
 
 public:
 
@@ -69,14 +70,41 @@ public:
         this->xn = xn;
         this->yn = yn;
         this->zn = zn;
+        this->_offset_x = 0;
+        this->_offset_y = 0;
+        this->_offset_z = 0;
     }
 
-    double get(int x, int y, int z) const {
-        return this->data[x * this->zn * this->yn + y * this->yn + z];
+    // void print_data() {
+    //     std::stringstream sstr;
+    //     sstr << "rank: " << rank << ", in accessor: " << this->data << std::endl;
+    //     std::cout << sstr.str();
+    // }
+
+    void configure_offsets(int offset_x, int offset_y, int offset_z) {
+        this->_offset_x = offset_x;
+        this->_offset_y = offset_y;
+        this->_offset_z = offset_z;
     }
 
-    void set(int x, int y, int z, double value) {
-        this->data[x * this->zn * this->yn + y * this->yn + z] = value;
+    double get(int x, int y, int z, bool _use_offset = false) const {
+        if (_use_offset) {
+            return this->data[(x + this->_offset_x) * this->zn * this->yn +
+                              (y + this->_offset_y) * this->zn +
+                              (z + this->_offset_z)];
+        } else {
+            return this->data[x * this->zn * this->yn + y * this->zn + z];
+        }
+    }
+
+    void set(int x, int y, int z, double value, bool _use_offset = false) {
+        if (_use_offset) {
+            this->data[(x + this->_offset_x) * this->zn * this->yn +
+                       (y + this->_offset_y) * this->zn +
+                       (z + this->_offset_z)] = value;
+        } else {
+            this->data[x * this->zn * this->yn + y * this->zn + z] = value;
+        }
     }
 };
 
@@ -423,12 +451,40 @@ int main(int argc, char *argv[]) {
                    curr_accessor(u_calc_curr, block_cells[0], block_cells[1], block_cells[2]),
                    next_accessor(u_calc_next, block_cells[0], block_cells[1], block_cells[2]);
 
+    // setting offsets for convenient loop indexing
+    prev_accessor.configure_offsets(-pb.extended.x.from, -pb.extended.y.from, -pb.extended.z.from);
+    curr_accessor.configure_offsets(-pb.extended.x.from, -pb.extended.y.from, -pb.extended.z.from);
+    next_accessor.configure_offsets(-pb.extended.x.from, -pb.extended.y.from, -pb.extended.z.from);
+
     // every block in non-trivial case has 6 neighbors: left-right, front-back, top-bottom
     const int interface_size = 6 * sqr(std::max(
         block_cells[0], std::max(block_cells[1], block_cells[2])));
 
     double *egress_buffer = new double[interface_size],
           *ingress_buffer = new double[interface_size];
+
+    // zero step: initials and boundaries
+    #pragma omp parallel for
+    for (int i = pb.extended.x.from; i < pb.extended.x.to; ++i) {
+        for (int j = pb.extended.y.from; j < pb.extended.y.to; ++j) {
+            for (int k = pb.extended.z.from; k < pb.extended.z.to; ++k) {
+
+                double backfill = u_analytical(i * dx, j * dy, k * dz, 0);
+                bool is_frontier_node =
+                    i == 0 or j == 0 or k == 0 or
+                    i == param_x_nodes or j == param_y_nodes or k == param_z_nodes;
+
+                if (not is_frontier_node) {
+                    prev_accessor.set(i, j, k, backfill, true);
+
+                } else {
+                    prev_accessor.set(i, j, k, backfill, true);
+                    curr_accessor.set(i, j, k, backfill, true);
+                    next_accessor.set(i, j, k, backfill, true);
+                }
+            }
+        }
+    }
 
 
     delete [] u_calc_prev;
