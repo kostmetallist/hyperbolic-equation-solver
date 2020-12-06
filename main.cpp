@@ -6,9 +6,6 @@
 #include <algorithm>
 #include <iostream>
 #include <iomanip>
-#include <vector>
-#include <string>
-#include <sstream>
 #include <math.h>
 #include <stdlib.h>
 
@@ -59,51 +56,55 @@ typedef struct {
 
 class MatrixAccessor {
 private:
-    double *data;
-    int xn, yn, zn;
+    double *_data;
+    int _xn, _yn, _zn;
     int _offset_x, _offset_y, _offset_z;
 
 public:
 
     MatrixAccessor(double *data, int xn, int yn, int zn) {
-        this->data = data;
-        this->xn = xn;
-        this->yn = yn;
-        this->zn = zn;
-        this->_offset_x = 0;
-        this->_offset_y = 0;
-        this->_offset_z = 0;
+        _data = data;
+        _xn = xn;
+        _yn = yn;
+        _zn = zn;
+        _offset_x = 0;
+        _offset_y = 0;
+        _offset_z = 0;
     }
 
-    // void print_data() {
-    //     std::stringstream sstr;
-    //     sstr << "rank: " << rank << ", in accessor: " << this->data << std::endl;
-    //     std::cout << sstr.str();
-    // }
-
-    void configure_offsets(int offset_x, int offset_y, int offset_z) {
-        this->_offset_x = offset_x;
-        this->_offset_y = offset_y;
-        this->_offset_z = offset_z;
-    }
-
-    double get(int x, int y, int z, bool _use_offset = false) const {
-        if (_use_offset) {
-            return this->data[(x + this->_offset_x) * this->zn * this->yn +
-                              (y + this->_offset_y) * this->zn +
-                              (z + this->_offset_z)];
+    int derive_index(int x, int y, int z, bool use_offset = false) {
+        if (use_offset) {
+            return (x + _offset_x) * _zn * _yn +
+                   (y + _offset_y) * _zn +
+                   (z + _offset_z);
         } else {
-            return this->data[x * this->zn * this->yn + y * this->zn + z];
+            return x * _zn * _yn + y * _zn + z;
         }
     }
 
-    void set(int x, int y, int z, double value, bool _use_offset = false) {
-        if (_use_offset) {
-            this->data[(x + this->_offset_x) * this->zn * this->yn +
-                       (y + this->_offset_y) * this->zn +
-                       (z + this->_offset_z)] = value;
+    void configure_offsets(int offset_x, int offset_y, int offset_z) {
+        _offset_x = offset_x;
+        _offset_y = offset_y;
+        _offset_z = offset_z;
+    }
+
+    double get(int x, int y, int z, bool use_offset = false) {
+        if (use_offset) {
+            return _data[(x + _offset_x) * _zn * _yn +
+                         (y + _offset_y) * _zn +
+                         (z + _offset_z)];
         } else {
-            this->data[x * this->zn * this->yn + y * this->zn + z] = value;
+            return _data[x * _zn * _yn + y * _zn + z];
+        }
+    }
+
+    void set(int x, int y, int z, double value, bool use_offset = false) {
+        if (use_offset) {
+            _data[(x + _offset_x) * _zn * _yn +
+                  (y + _offset_y) * _zn +
+                  (z + _offset_z)] = value;
+        } else {
+            _data[x * _zn * _yn + y * _zn + z] = value;
         }
     }
 };
@@ -256,6 +257,25 @@ double u_analytical(double x, double y, double z, double t) {
            cos(M_PI * t * sqrt(1 / sqr(param_x_bound) + 
                                4 / sqr(param_y_bound) + 
                                9 / sqr(param_z_bound)));
+}
+
+double calculate_laplacian(MatrixAccessor accessor, int x, int y, int z,
+    double dx, double dy, double dz) {
+
+    const double doubled = 2 * accessor.get(x, y, z, true);
+    return (accessor.get(x-1, y, z, true) - doubled + accessor.get(x+1, y, z, true)) / sqr(dx) +
+           (accessor.get(x, y-1, z, true) - doubled + accessor.get(x, y+1, z, true)) / sqr(dy) +
+           (accessor.get(x, y, z-1, true) - doubled + accessor.get(x, y, z+1, true)) / sqr(dz);
+}
+
+double calculate_laplacian(MatrixAccessor accessor, int x, int y, int z,
+    double dx, double dy, double dz, double *array) {
+
+    const int base_index = accessor.derive_index(x, y, z, true);
+    const double doubled = 2 * array[base_index];
+    return (array[accessor.derive_index(x-1, y, z, true)] - doubled + array[accessor.derive_index(x+1, y, z, true)]) / sqr(dx) +
+           (array[accessor.derive_index(x, y-1, z, true)] - doubled + array[accessor.derive_index(x, y+1, z, true)]) / sqr(dy) +
+           (array[base_index - 1] - doubled + array[base_index + 1]) / sqr(dz);
 }
 
 int main(int argc, char *argv[]) {
@@ -412,6 +432,8 @@ int main(int argc, char *argv[]) {
     param_z_bound = params_double[2];
     param_t_bound = params_double[3];
 
+    omp_set_num_threads(param_nt);
+
     // runtime-calculated parameters
     const double dx = param_x_bound / param_x_nodes;
     const double dy = param_y_bound / param_y_nodes;
@@ -430,9 +452,6 @@ int main(int argc, char *argv[]) {
     MPI_Comm_rank(grid_comm, &rank);
     int rank_coords[3];
     MPI_Cart_coords(grid_comm, rank, 3, rank_coords);
-
-    // TODO: change placement to somewhat more appropriate
-    omp_set_num_threads(param_nt);
 
     const int nodes_coupled[3] = {param_x_nodes, param_y_nodes, param_z_nodes};
     ProcessBlock pb = prepare_process_block(nodes_coupled, rank_coords, dims);
@@ -486,6 +505,52 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // first step: laplacian for phi function
+    #pragma omp parallel for
+    for (int i = pb.inner.x.from; i < pb.inner.x.to; ++i) {
+        for (int j = pb.inner.y.from; j < pb.inner.y.to; ++j) {
+            for (int k = pb.inner.z.from; k < pb.inner.z.to; ++k) {
+                curr_accessor.set(i, j, k,
+                    prev_accessor.get(i, j, k, true) + sqr(dt) * calculate_laplacian(
+                        prev_accessor, i, j, k, dx, dy, dz) / 2, true);
+            }
+        }
+    }
+
+    // main loop
+    double start_time = MPI_Wtime();
+    int step = 1;
+
+    while (true) {
+
+        #pragma omp parallel for
+        for (int i = pb.inner.x.from; i < pb.inner.x.to; ++i) {
+            for (int j = pb.inner.y.from; j < pb.inner.y.to; ++j) {
+                for (int k = pb.inner.z.from; k < pb.inner.z.to; ++k) {
+
+                    u_calc_next[next_accessor.derive_index(i, j, k, true)] =
+                        calculate_laplacian(curr_accessor, i, j, k, dx, dy, dz, u_calc_curr) * sqr(dt) -
+                            u_calc_prev[prev_accessor.derive_index(i, j, k, true)] +
+                            2 * u_calc_curr[curr_accessor.derive_index(i, j, k, true)];
+                }
+            }
+        }
+
+        if (++step > param_t_steps) {
+            break;
+        }
+
+        double *tmp = u_calc_prev;
+        // shifting the arrays
+        u_calc_prev = u_calc_curr;
+        u_calc_curr = u_calc_next;
+        u_calc_next = tmp;
+    }
+
+    if (rank == MASTER_PROCESS) {
+        std::cout << "Elapsed time: " << std::setprecision(8) << 
+            (MPI_Wtime() - start_time) << " s" << std::endl;
+    }
 
     delete [] u_calc_prev;
     delete [] u_calc_curr;
