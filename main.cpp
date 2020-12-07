@@ -31,6 +31,10 @@ int param_nt = 1;
 int nproc, rank;
 const int MASTER_PROCESS = 0;
 
+// MPI shift dispositions
+const int DISP_UPWARDS = 1;
+const int DISP_DOWNWARDS = -1;
+
 typedef enum {
     SUCCESS                 = 0,
     INVALID_PARAMETERS      = 1,
@@ -46,6 +50,17 @@ typedef struct {
     Range x;
     Range y;
     Range z;
+
+    Range const& operator[](int index) const {
+        if (not index) {
+            return x;
+        } else if (index == 1) {
+            return y;
+        } else {
+            return z;
+        }
+    }
+
 } ProcessBlockArea;
 
 typedef struct {
@@ -53,6 +68,11 @@ typedef struct {
     // extended area represents the union of inner cells and interface ones
     ProcessBlockArea extended;
 } ProcessBlock;
+
+typedef struct {
+    int lowest;
+    int highest;
+} AdjacentDirections;
 
 class MatrixAccessor {
 private:
@@ -276,6 +296,24 @@ double calculate_laplacian(MatrixAccessor accessor, int x, int y, int z,
     return (array[accessor.derive_index(x-1, y, z, true)] - doubled + array[accessor.derive_index(x+1, y, z, true)]) / sqr(dx) +
            (array[accessor.derive_index(x, y-1, z, true)] - doubled + array[accessor.derive_index(x, y+1, z, true)]) / sqr(dy) +
            (array[base_index - 1] - doubled + array[base_index + 1]) / sqr(dz);
+}
+
+// direction is represented by 0, 1, 2 => supposed to receive integers in that range
+inline AdjacentDirections get_adjacent_directions(int pivot_direction) {
+
+    AdjacentDirections result;
+    if (pivot_direction == 1) {
+        result.lowest  = 0;
+        result.highest = 2;
+    } else if (pivot_direction == 2) {
+        result.lowest  = 0;
+        result.highest = 1;
+    } else if (not pivot_direction) {
+        result.lowest  = 1;
+        result.highest = 2;
+    }
+
+    return result;
 }
 
 int main(int argc, char *argv[]) {
@@ -524,6 +562,100 @@ int main(int argc, char *argv[]) {
 
     while (true) {
 
+        MPI_Request requests[6 * 2];
+        int cells_packed = 0,
+            cells_claimed = 0;
+        int total_requests = 0;
+        int rank_src, rank_dst;
+
+        for (int dir = 0; dir < 3; ++dir) {
+
+            const AdjacentDirections ad = get_adjacent_directions(dir);
+            const int dir1 = ad.lowest, dir2 = ad.highest;
+            // iterating over allowed dispositions
+            for (int disp = DISP_DOWNWARDS; disp < DISP_UPWARDS + 1; disp += 2) {
+
+                MPI_Cart_shift(grid_comm, dir, disp, &rank_src, &rank_dst);
+                if (rank_dst != MPI_PROC_NULL) {
+
+                    // proactive claim for data transmission
+                    int ingress_batch_size = (pb.inner[dir1].to - pb.inner[dir1].from) *
+                        (pb.inner[dir2].to - pb.inner[dir2].from);
+                    MPI_Irecv(&ingress_buffer[cells_claimed], ingress_batch_size,
+                        MPI_DOUBLE, rank_dst, MPI_ANY_TAG, grid_comm, &requests[total_requests++]);
+                    cells_claimed += ingress_batch_size;
+
+                    double *batch_start = &egress_buffer[cells_packed];
+                    int batch_cells_packed = 0;
+
+                    // iidx == interface index
+                    int iidx[3] = {0, 0, 0};
+                    if (disp == DISP_UPWARDS) {
+                        iidx[dir] = pb.inner[dir].to - 1;
+                    } else {
+                        iidx[dir] = pb.inner[dir].from;
+                    }
+
+                    for (int idx1 = pb.inner[dir1].from; idx1 < pb.inner[dir1].to; ++idx1) {
+                        iidx[dir1] = idx1;
+                        for (int idx2 = pb.inner[dir2].from; idx2 < pb.inner[dir2].to; ++idx2) {
+                            iidx[dir2] = idx2;
+
+                            egress_buffer[cells_packed + batch_cells_packed] =
+                                u_calc_curr[curr_accessor.derive_index(
+                                    iidx[0], iidx[1], iidx[2], true)];
+
+                            batch_cells_packed++;
+                        }
+                    }
+
+                    MPI_Isend(batch_start, batch_cells_packed, MPI_DOUBLE, rank_dst, 0,
+                        grid_comm, &requests[total_requests]);
+                    cells_packed += batch_cells_packed;
+                    total_requests++;
+                }
+            }
+        }
+
+        // all the communications must be completed before processing arrived cells;
+        // ignorance is to avoid the send/receive details examination
+        if (total_requests) {
+            MPI_Waitall(total_requests, requests, MPI_STATUSES_IGNORE);
+        }
+
+        int cells_unpacked = 0;
+        for (int dir = 0; dir < 3; ++dir) {
+
+            const AdjacentDirections ad = get_adjacent_directions(dir);
+            const int dir1 = ad.lowest, dir2 = ad.highest;
+            for (int disp = DISP_DOWNWARDS; disp < DISP_UPWARDS + 1; disp += 2) {
+
+                MPI_Cart_shift(grid_comm, dir, disp, &rank_src, &rank_dst);
+                if (rank_dst != MPI_PROC_NULL) {
+
+                    int iidx[3] = {0, 0, 0};
+                    if (disp == DISP_UPWARDS) {
+                        iidx[dir] = pb.extended[dir].to - 1;
+                    } else {
+                        iidx[dir] = pb.extended[dir].from;
+                    }
+
+                    for (int idx1 = pb.inner[dir1].from; idx1 < pb.inner[dir1].to; ++idx1) {
+                        iidx[dir1] = idx1;
+                        for (int idx2 = pb.inner[dir2].from; idx2 < pb.inner[dir2].to; ++idx2) {
+                            iidx[dir2] = idx2;
+
+                            u_calc_curr[(iidx[0] - pb.extended.x.from) * block_cells[1] * block_cells[2] +
+                                        (iidx[1] - pb.extended.y.from) * block_cells[2] +
+                                        (iidx[2] - pb.extended.z.from)] =
+                                ingress_buffer[cells_unpacked];
+                            cells_unpacked++;
+                        }
+                    }
+                }
+            }
+        }
+
         #pragma omp parallel for
         for (int i = pb.inner.x.from; i < pb.inner.x.to; ++i) {
             for (int j = pb.inner.y.from; j < pb.inner.y.to; ++j) {
@@ -575,7 +707,7 @@ int main(int argc, char *argv[]) {
         u_calc_next = tmp;
     }
 
-    // TODO count digits num (as C++98 does not support to_string)
+    // TODO implement function to count digits num (as C++98 does not support to_string)
     // const int step_display_width = std::to_string(param_t_steps).length();
     const int step_display_width = 2;
     if (rank == MASTER_PROCESS) {
