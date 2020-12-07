@@ -316,6 +316,18 @@ inline AdjacentDirections get_adjacent_directions(int pivot_direction) {
     return result;
 }
 
+int get_digit_count(int source) {
+
+    int reduced = source;
+    int digit_count = 0;
+    while (reduced) {
+        reduced /= 10;
+        digit_count++;
+    }
+
+    return (not digit_count)? 1: digit_count;
+}
+
 int main(int argc, char *argv[]) {
 
     MPI_Init(&argc, &argv);
@@ -707,12 +719,9 @@ int main(int argc, char *argv[]) {
         u_calc_next = tmp;
     }
 
-    // TODO implement function to count digits num (as C++98 does not support to_string)
-    // const int step_display_width = std::to_string(param_t_steps).length();
-    const int step_display_width = 2;
     if (rank == MASTER_PROCESS) {
         for (int i = 1; i <= param_t_steps; ++i) {
-            std::cout << std::setw(step_display_width) << i << ": " <<
+            std::cout << std::setw(get_digit_count(param_t_steps)) << i << ": " <<
                 std::setprecision(16) << std::fixed << deltas[i] << std::endl;
         }
         std::cout << "Elapsed time: " << std::setprecision(8) << 
