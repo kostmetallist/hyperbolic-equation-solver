@@ -53,7 +53,7 @@ public:
         _offset_z = 0;
     }
 
-    int derive_index(int x, int y, int z, bool use_offset = false) {
+    int derive_index(int x, int y, int z, bool use_offset = true) {
         if (use_offset) {
             return (x + _offset_x) * _zn * _yn +
                    (y + _offset_y) * _zn +
@@ -69,7 +69,7 @@ public:
         _offset_z = offset_z;
     }
 
-    double get(int x, int y, int z, bool use_offset = false) {
+    double get(int x, int y, int z, bool use_offset = true) {
         if (use_offset) {
             return _data[(x + _offset_x) * _zn * _yn +
                          (y + _offset_y) * _zn +
@@ -79,7 +79,7 @@ public:
         }
     }
 
-    void set(int x, int y, int z, double value, bool use_offset = false) {
+    void set(int x, int y, int z, double value, bool use_offset = true) {
         if (use_offset) {
             _data[(x + _offset_x) * _zn * _yn +
                   (y + _offset_y) * _zn +

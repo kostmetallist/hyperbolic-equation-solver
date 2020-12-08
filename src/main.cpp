@@ -196,19 +196,19 @@ double u_analytical(double x, double y, double z, double t) {
 double calculate_laplacian(MatrixAccessor accessor, int x, int y, int z,
     double dx, double dy, double dz) {
 
-    const double doubled = 2 * accessor.get(x, y, z, true);
-    return (accessor.get(x-1, y, z, true) - doubled + accessor.get(x+1, y, z, true)) / sqr(dx) +
-           (accessor.get(x, y-1, z, true) - doubled + accessor.get(x, y+1, z, true)) / sqr(dy) +
-           (accessor.get(x, y, z-1, true) - doubled + accessor.get(x, y, z+1, true)) / sqr(dz);
+    const double doubled = 2 * accessor.get(x, y, z);
+    return (accessor.get(x-1, y, z) - doubled + accessor.get(x+1, y, z)) / sqr(dx) +
+           (accessor.get(x, y-1, z) - doubled + accessor.get(x, y+1, z)) / sqr(dy) +
+           (accessor.get(x, y, z-1) - doubled + accessor.get(x, y, z+1)) / sqr(dz);
 }
 
 double calculate_laplacian(MatrixAccessor accessor, int x, int y, int z,
     double dx, double dy, double dz, double *array) {
 
-    const int base_index = accessor.derive_index(x, y, z, true);
+    const int base_index = accessor.derive_index(x, y, z);
     const double doubled = 2 * array[base_index];
-    return (array[accessor.derive_index(x-1, y, z, true)] - doubled + array[accessor.derive_index(x+1, y, z, true)]) / sqr(dx) +
-           (array[accessor.derive_index(x, y-1, z, true)] - doubled + array[accessor.derive_index(x, y+1, z, true)]) / sqr(dy) +
+    return (array[accessor.derive_index(x-1, y, z)] - doubled + array[accessor.derive_index(x+1, y, z)]) / sqr(dx) +
+           (array[accessor.derive_index(x, y-1, z)] - doubled + array[accessor.derive_index(x, y+1, z)]) / sqr(dy) +
            (array[base_index - 1] - doubled + array[base_index + 1]) / sqr(dz);
 }
 
@@ -458,12 +458,12 @@ int main(int argc, char *argv[]) {
                     i == param_x_nodes or j == param_y_nodes or k == param_z_nodes;
 
                 if (not is_frontier_node) {
-                    prev_accessor.set(i, j, k, backfill, true);
+                    prev_accessor.set(i, j, k, backfill);
 
                 } else {
-                    prev_accessor.set(i, j, k, backfill, true);
-                    curr_accessor.set(i, j, k, backfill, true);
-                    next_accessor.set(i, j, k, backfill, true);
+                    prev_accessor.set(i, j, k, backfill);
+                    curr_accessor.set(i, j, k, backfill);
+                    next_accessor.set(i, j, k, backfill);
                 }
             }
         }
@@ -475,8 +475,8 @@ int main(int argc, char *argv[]) {
         for (int j = pb.inner.y.from; j < pb.inner.y.to; ++j) {
             for (int k = pb.inner.z.from; k < pb.inner.z.to; ++k) {
                 curr_accessor.set(i, j, k,
-                    prev_accessor.get(i, j, k, true) + sqr(dt) * calculate_laplacian(
-                        prev_accessor, i, j, k, dx, dy, dz) / 2, true);
+                    prev_accessor.get(i, j, k) + sqr(dt) * calculate_laplacian(
+                        prev_accessor, i, j, k, dx, dy, dz) / 2);
             }
         }
     }
@@ -529,7 +529,7 @@ int main(int argc, char *argv[]) {
 
                             egress_buffer[cells_packed + batch_cells_packed] =
                                 u_calc_curr[curr_accessor.derive_index(
-                                    iidx[0], iidx[1], iidx[2], true)];
+                                    iidx[0], iidx[1], iidx[2])];
 
                             batch_cells_packed++;
                         }
@@ -587,10 +587,10 @@ int main(int argc, char *argv[]) {
             for (int j = pb.inner.y.from; j < pb.inner.y.to; ++j) {
                 for (int k = pb.inner.z.from; k < pb.inner.z.to; ++k) {
 
-                    u_calc_next[next_accessor.derive_index(i, j, k, true)] =
+                    u_calc_next[next_accessor.derive_index(i, j, k)] =
                         calculate_laplacian(curr_accessor, i, j, k, dx, dy, dz, u_calc_curr) * sqr(dt) -
-                            u_calc_prev[prev_accessor.derive_index(i, j, k, true)] +
-                            2 * u_calc_curr[curr_accessor.derive_index(i, j, k, true)];
+                            u_calc_prev[prev_accessor.derive_index(i, j, k)] +
+                            2 * u_calc_curr[curr_accessor.derive_index(i, j, k)];
                 }
             }
         }
