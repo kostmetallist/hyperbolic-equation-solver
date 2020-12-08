@@ -408,8 +408,8 @@ int main(int argc, char *argv[]) {
     // TODO: uncomment for production
     // const double dt = param_t_bound / param_t_steps;
 
-    const int dims[3] = {param_x_proc, param_y_proc, param_z_proc};
-    const int periods[3] = {0, 0, 0};
+    int dims[3] = {param_x_proc, param_y_proc, param_z_proc};
+    int periods[3] = {0, 0, 0};
     const int reorder_enabled = 1;
     MPI_Comm grid_comm;
     MPI_Cart_create(MPI_COMM_WORLD, 3, dims, periods, reorder_enabled, &grid_comm);
