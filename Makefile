@@ -1,5 +1,5 @@
 IBM_FLAGS = -qsmp=omp
-GNU_STANDARD = c++11
+GNU_STANDARD = c++98
 
 bgp: COMP = mpixlcxx_r
 bgp: CFLAGS = $(IBM_FLAGS)
@@ -15,9 +15,10 @@ polus: polus_bin
 
 BINARY_NAME = solver
 BUILD_DIR = build
+SRC_DIR = src
 OBJECT_FILES := $(BUILD_DIR)/main.o
 
-$(BUILD_DIR)/%.o: %.cpp
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp $(SRC_DIR)/structures.hpp
 	$(COMP) $(CFLAGS) -c -o $@ $<
 
 bgp_bin: $(OBJECT_FILES)
