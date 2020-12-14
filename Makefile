@@ -15,6 +15,7 @@ polus: polus_bin
 
 BINARY_NAME = solver
 BUILD_DIR = build
+DUMP_DIR = dump
 SRC_DIR = src
 OBJECT_FILES := $(BUILD_DIR)/main.o
 
@@ -31,4 +32,4 @@ polus_bin: $(OBJECT_FILES)
 	$(COMP) $(CFLAGS) -o $(BINARY_NAME) $^
 
 clean:
-	rm -f $(BUILD_DIR)/*.o solver
+	rm -f $(BUILD_DIR)/*.o $(DUMP_DIR)/*.csv solver

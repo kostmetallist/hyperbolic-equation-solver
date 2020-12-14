@@ -3,11 +3,16 @@
 #include <mpi.h>
 #include <omp.h>
 #include <getopt.h>
+
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <fstream>
 #include <iostream>
 #include <iomanip>
-#include <math.h>
-#include <stdlib.h>
+#include <sstream>
 
 #include "structures.hpp"
 
@@ -36,6 +41,8 @@ const int MASTER_PROCESS = 0;
 // MPI shift dispositions
 const int DISP_UPWARDS = 1;
 const int DISP_DOWNWARDS = -1;
+
+const int OUTPUT_PREFIX_LEN = 26;
 
 typedef enum {
     SUCCESS                 = 0,
@@ -242,6 +249,23 @@ int get_digit_count(int source) {
     return (not digit_count)? 1: digit_count;
 }
 
+std::string construct_dump_filename(const std::string &prefix, int step = 0,
+    int rank = -1) {
+
+    std::stringstream sstr;
+    sstr << prefix;
+
+    // if rank has been passed, then the generated filename corresponds to
+    // the temporary CSV file for some process
+    if (rank != -1) {
+        sstr << rank << "-" << step << ".tmp.csv";
+    } else {
+        sstr << step << ".csv";
+    }
+
+    return sstr.str();
+}
+
 int main(int argc, char *argv[]) {
 
     MPI_Init(&argc, &argv);
@@ -251,6 +275,10 @@ int main(int argc, char *argv[]) {
     // arrays for parameters transition from the master to slaves
     int params_int[8];
     double params_double[4];
+
+    // common part for CSV dump files
+    char output_prefix[OUTPUT_PREFIX_LEN];
+    output_prefix[OUTPUT_PREFIX_LEN - 1] = '\0';
 
     // processing and validating input values
     if (rank == MASTER_PROCESS) {
@@ -376,11 +404,27 @@ int main(int argc, char *argv[]) {
         params_double[1] = param_y_bound;
         params_double[2] = param_z_bound;
         params_double[3] = param_t_bound;
+
+        std::time_t rawtime = std::time(0);
+        std::tm *timeinfo = std::gmtime(&rawtime);
+        std::stringstream output_prefix_stream;
+        output_prefix_stream <<
+            "dump/" << (1900 + timeinfo->tm_year) << "-" <<
+            std::setfill('0') << std::setw(2) << ((1 + timeinfo->tm_mon)) << "-" <<
+            std::setfill('0') << std::setw(2) << timeinfo->tm_mday << "T" << 
+            std::setfill('0') << std::setw(2) << timeinfo->tm_hour << ":" <<
+            std::setfill('0') << std::setw(2) << timeinfo->tm_min << ":" <<
+            std::setfill('0') << std::setw(2) << timeinfo->tm_sec << "-";
+        std::string conversed = output_prefix_stream.str();
+        for (int i = 0; i < conversed.length(); ++i)
+            output_prefix[i] = conversed[i];
     }
 
     // receiving parameters from MASTER
     MPI_Bcast(params_int, 8, MPI_INT, MASTER_PROCESS, MPI_COMM_WORLD);
     MPI_Bcast(params_double, 4, MPI_DOUBLE, MASTER_PROCESS, MPI_COMM_WORLD);
+    MPI_Bcast(output_prefix, OUTPUT_PREFIX_LEN - 1, MPI_CHAR, MASTER_PROCESS,
+        MPI_COMM_WORLD);
 
     param_x_proc  = params_int[0];
     param_y_proc  = params_int[1];
@@ -595,6 +639,9 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        std::ofstream process_delta_dump(construct_dump_filename(
+            output_prefix, step, rank).c_str());
+
         double local_delta = 0;
         #pragma omp parallel for shared(local_delta)
         for (int i = pb.inner.x.from; i < pb.inner.x.to; ++i) {
@@ -607,10 +654,15 @@ int main(int argc, char *argv[]) {
                             (j - pb.extended.y.from) * block_cells[2] + (k - pb.extended.z.from)]);
 
                     #pragma omp critical
-                    local_delta = (delta > local_delta)? delta: local_delta;
+                    {
+                        local_delta = (delta > local_delta)? delta: local_delta;
+                        process_delta_dump << i << "," << j << "," << k << "," << delta << std::endl;
+                    }
                 }
             }
         }
+
+        process_delta_dump.close();
 
         // getting overall area error
         double global_delta;
@@ -634,12 +686,37 @@ int main(int argc, char *argv[]) {
     }
 
     if (rank == MASTER_PROCESS) {
+        // printing out info for calculating error
         for (int i = 1; i <= param_t_steps; ++i) {
             std::cout << std::setw(get_digit_count(param_t_steps)) << i << ": " <<
                 std::setprecision(16) << std::fixed << deltas[i] << std::endl;
         }
         std::cout << "Elapsed time: " << std::setprecision(8) << 
             (MPI_Wtime() - start_time) << " s" << std::endl;
+
+        // preparing merged dump CSV-s
+        for (step = 0; step < param_t_steps; ++step) {
+
+            std::ofstream overall_delta_dump(construct_dump_filename(
+                output_prefix, step + 1).c_str());
+
+            for (int pid = 0; pid < nproc; ++pid) {
+
+                std::string process_delta_dump_name = construct_dump_filename(
+                    output_prefix, step + 1, pid);
+                std::ifstream process_delta_dump(process_delta_dump_name.c_str());
+
+                for (std::string line; std::getline(process_delta_dump, line);) {
+                    overall_delta_dump << line << std::endl;
+                }
+
+                process_delta_dump.close();
+                // remove the temporary CSV file
+                int retcode = std::remove(process_delta_dump_name.c_str());
+            }
+
+            overall_delta_dump.close();
+        }
     }
 
     delete [] u_calc_prev;
