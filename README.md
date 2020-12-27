@@ -4,6 +4,10 @@ A parallel program for calculating numerical solution of
 [PDE](https://en.wikipedia.org/wiki/Partial_differential_equation).
 Uses MPI and OpenMP to unleash the power of multiprocessing and multithreading.
 
+<p align="center">
+  <img src="doc/exchange-diagram.png" alt="<icon here>" width="400"/>
+</p>
+
 ## Problem
 
 Full task explanation is provided in the
